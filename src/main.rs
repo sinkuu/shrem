@@ -11,11 +11,12 @@ use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Copy, Clone)]
-struct Flags {
+struct Args {
     recursive: bool,
     force: bool,
     verbose: bool,
     interactive: bool,
+    iterations: Option<usize>,
 }
 
 fn main() {
@@ -28,35 +29,42 @@ fn main() {
         .arg(Arg::with_name("force")
              .short("f")
              .long("force")
-             .help("ignore nonexistent files and arguments"))
+             .help("Ignore nonexistent files and arguments"))
         .arg(Arg::with_name("recursive")
              .short("r")
              .long("recursive")
-             .help("remove directories and their contents recursively"))
+             .help("Remove directories and their contents recursively"))
         .arg(Arg::with_name("verbose")
              .short("v")
              .long("verbose")
-             .help("explain what is being done"))
+             .help("Explain what is being done"))
         .arg(Arg::with_name("interactive")
              .short("i")
              .long("interactive")
-             .help("prompt before removal"))
+             .help("Prompt before removal"))
+        .arg(Arg::with_name("N")
+             .short("n")
+             .long("iterations")
+             .help("Overwrite N times instead of default (3)")
+             .takes_value(true))
         .get_matches();
 
-    let flags = Flags {
+    let args = Args {
         recursive: matches.is_present("recursive"),
         force: matches.is_present("force"),
         verbose: matches.is_present("verbose"),
         interactive: matches.is_present("interactive"),
+        iterations: matches.value_of("N")
+            .and_then(|s| s.parse::<usize>().ok()),
     };
 
-    if flags.recursive {
+    if args.recursive {
         for f in matches.values_of("FILE").unwrap_or(vec![]) {
-            recursive_shred(f, &flags).unwrap();
+            recursive_shred(f, &args).unwrap();
         }
     } else {
         let mut paths = matches.values_of("FILE").unwrap_or(vec![]);
-        if flags.force {
+        if args.force {
             paths = paths.into_iter()
                 .filter(|ps| {
                     let p = Path::new(ps);
@@ -65,33 +73,33 @@ fn main() {
         }
 
         if paths.len() > 0 {
-            let mut shred_cmd = get_shred_cmd(&flags);
+            let mut shred_cmd = get_shred_cmd(&args);
             shred_cmd.args(&paths);
             std::process::exit(shred_cmd.status().unwrap().code().unwrap());
         }
     }
 }
 
-fn recursive_shred<P: AsRef<Path>>(path: P, flags: &Flags) -> io::Result<()> {
+fn recursive_shred<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
     use std::fs;
 
     let path = path.as_ref();
 
-    if flags.force && !path.exists() {
+    if args.force && !path.exists() {
         return Ok(());
     }
 
     if path.is_dir() {
-        if !flags.interactive ||
+        if !args.interactive ||
                 try!(prompt(format_args!("descend into directory '{}'?", path.display()))) {
             for entry in try!(fs::read_dir(path)) {
-                try!(recursive_shred(try!(entry).path(), flags));
+                try!(recursive_shred(try!(entry).path(), args));
             }
-            try!(shred_dir(path, flags));
+            try!(shred_dir(path, args));
         }
     } else {
-        if !flags.interactive || try!(prompt(format_args!("remove file '{}'?", path.display()))) {
-            let mut shred_cmd = get_shred_cmd(flags);
+        if !args.interactive || try!(prompt(format_args!("remove file '{}'?", path.display()))) {
+            let mut shred_cmd = get_shred_cmd(args);
             shred_cmd.arg(path.as_os_str());
             let status = try!(shred_cmd.status());
             if !status.success() {
@@ -103,12 +111,12 @@ fn recursive_shred<P: AsRef<Path>>(path: P, flags: &Flags) -> io::Result<()> {
     Ok(())
 }
 
-fn shred_dir<P: AsRef<Path>>(path: P, flags: &Flags) -> io::Result<()> {
+fn shred_dir<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
     use std::fs;
     use std::iter;
 
     let mut path = path.as_ref().to_path_buf();
-    if !flags.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
+    if !args.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
         if let Some(name) = path.clone().file_name() {
             let len = name.to_bytes().unwrap().len();
             for n in (1..len+1).rev() {
@@ -117,23 +125,26 @@ fn shred_dir<P: AsRef<Path>>(path: P, flags: &Flags) -> io::Result<()> {
 
                 let new_path = path.with_file_name(&s);
                 try!(fs::rename(&path, &new_path));
-                if flags.verbose { println!("shrem: {}: renamed to {}", path.display(), new_path.display()); }
+                if args.verbose { println!("shrem: {}: renamed to {}", path.display(), new_path.display()); }
                 path = new_path;
             }
         }
 
-        if flags.verbose { println!("shrem: {}: removing", path.display()); }
+        if args.verbose { println!("shrem: {}: removing", path.display()); }
         try!(fs::remove_dir(&path));
     }
 
     Ok(())
 }
 
-fn get_shred_cmd(flags: &Flags) -> Command {
+fn get_shred_cmd(args: &Args) -> Command {
     let mut shred_cmd = Command::new("shred");
     shred_cmd.args(&["-z", "-u"][..]);
-    if flags.verbose {
+    if args.verbose {
         shred_cmd.arg("-v");
+    }
+    if let Some(n) = args.iterations {
+        shred_cmd.arg(fmt::format(format_args!("{}", n)));
     }
     shred_cmd
 }
