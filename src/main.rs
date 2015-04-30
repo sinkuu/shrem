@@ -4,18 +4,23 @@
 extern crate clap;
 
 use clap::{App, Arg};
+use std::error::Error;
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::fs::PathExt;
 use std::io;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
+use std::result::Result;
 
 #[derive(Debug, Copy, Clone)]
-struct Args {
+struct Config {
     recursive: bool,
     force: bool,
     verbose: bool,
     interactive: bool,
+    preserve_root: bool,
     iterations: Option<usize>,
 }
 
@@ -42,6 +47,14 @@ fn main() {
              .short("i")
              .long("interactive")
              .help("Prompt before removal"))
+        .arg(Arg::with_name("preserve-root")
+             .long("preserve-root")
+             .mutually_excludes("no-preserve-root")
+             .help("do not remove '/' (default)"))
+        .arg(Arg::with_name("no-preserve-root")
+             .long("no-preserve-root")
+             .mutually_excludes("preserve-root")
+             .help("allow removing '/'"))
         .arg(Arg::with_name("N")
              .short("n")
              .long("iterations")
@@ -49,22 +62,36 @@ fn main() {
              .takes_value(true))
         .get_matches();
 
-    let args = Args {
+    let config = Config {
         recursive: matches.is_present("recursive"),
         force: matches.is_present("force"),
         verbose: matches.is_present("verbose"),
         interactive: matches.is_present("interactive"),
+        preserve_root: matches.is_present("preserve-root") || !matches.is_present("no-preserve-root"),
         iterations: matches.value_of("N")
             .and_then(|s| s.parse::<usize>().ok()),
     };
 
-    if args.recursive {
+    if config.recursive {
+        let mut err = false;
         for f in matches.values_of("FILE").unwrap_or(vec![]) {
-            recursive_shred(f, &args).unwrap();
+            match recursive_shred(f, &config) {
+                Ok(()) => (),
+                Err(e) => {
+                    err = true;
+                    match e {
+                        RecursiveShredError::ExternalProcessError(_) => (),
+                        _ => writeln!(io::stderr(), "shrem: {}", e).unwrap(),
+                    }
+                }
+            }
+        }
+        if err {
+            std::process::exit(1);
         }
     } else {
         let mut paths = matches.values_of("FILE").unwrap_or(vec![]);
-        if args.force {
+        if config.force {
             paths = paths.into_iter()
                 .filter(|ps| {
                     let p = Path::new(ps);
@@ -73,37 +100,85 @@ fn main() {
         }
 
         if paths.len() > 0 {
-            let mut shred_cmd = get_shred_cmd(&args);
+            let mut shred_cmd = get_shred_cmd(&config);
             shred_cmd.args(&paths);
             std::process::exit(shred_cmd.status().unwrap().code().unwrap());
         }
     }
 }
 
-fn recursive_shred<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
+#[derive(Debug)]
+enum RecursiveShredError {
+    IoError(io::Error),
+    PreservedRootError,
+    ExternalProcessError(ExitStatus),
+}
+
+impl Display for RecursiveShredError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if let &RecursiveShredError::IoError(ref e) = self {
+            e.fmt(f)
+        } else {
+            f.write_str(<Self as Error>::description(self))
+        }
+    }
+}
+
+impl Error for RecursiveShredError {
+    fn description(&self) -> &str {
+        match *self {
+            RecursiveShredError::IoError(ref e) =>
+                e.description(),
+            RecursiveShredError::PreservedRootError =>
+                "tried to remove '/' recursively. use --no-preserve-root to override this.",
+            RecursiveShredError::ExternalProcessError(_) =>
+                "external process exited with an error",
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        if let &RecursiveShredError::IoError(ref e) = self {
+            Some(e)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<io::Error> for RecursiveShredError {
+    fn from(e: io::Error) -> RecursiveShredError {
+        RecursiveShredError::IoError(e)
+    }
+}
+
+fn recursive_shred<P: AsRef<Path>>(path: P, config: &Config) -> Result<(), RecursiveShredError> {
     use std::fs;
 
     let path = path.as_ref();
 
-    if args.force && !path.exists() {
+    if config.force && !path.exists() {
         return Ok(());
     }
 
+    if config.preserve_root && path.is_absolute() && path.parent().is_none() {
+        return Err(RecursiveShredError::PreservedRootError);
+    }
+
     if path.is_dir() {
-        if !args.interactive ||
+        if !config.interactive ||
                 try!(prompt(format_args!("descend into directory '{}'?", path.display()))) {
             for entry in try!(fs::read_dir(path)) {
-                try!(recursive_shred(try!(entry).path(), args));
+                try!(recursive_shred(try!(entry).path(), config));
             }
-            try!(shred_dir(path, args));
+            try!(shred_dir(path, config));
         }
     } else {
-        if !args.interactive || try!(prompt(format_args!("remove file '{}'?", path.display()))) {
-            let mut shred_cmd = get_shred_cmd(args);
+        if !config.interactive || try!(prompt(format_args!("remove file '{}'?", path.display()))) {
+            let mut shred_cmd = get_shred_cmd(config);
             shred_cmd.arg(path.as_os_str());
             let status = try!(shred_cmd.status());
             if !status.success() {
-                std::process::exit(status.code().unwrap());
+                return Err(RecursiveShredError::ExternalProcessError(status));
             }
         }
     }
@@ -111,12 +186,12 @@ fn recursive_shred<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
     Ok(())
 }
 
-fn shred_dir<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
+fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
     use std::fs;
     use std::iter;
 
     let mut path = path.as_ref().to_path_buf();
-    if !args.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
+    if !config.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
         if let Some(name) = path.clone().file_name() {
             let len = name.to_bytes().unwrap().len();
             for n in (1..len+1).rev() {
@@ -125,34 +200,32 @@ fn shred_dir<P: AsRef<Path>>(path: P, args: &Args) -> io::Result<()> {
 
                 let new_path = path.with_file_name(&s);
                 try!(fs::rename(&path, &new_path));
-                if args.verbose { println!("shrem: {}: renamed to {}", path.display(), new_path.display()); }
+                if config.verbose { println!("shrem: {}: renamed to {}", path.display(), new_path.display()); }
                 path = new_path;
             }
         }
 
-        if args.verbose { println!("shrem: {}: removing", path.display()); }
+        if config.verbose { println!("shrem: {}: removing", path.display()); }
         try!(fs::remove_dir(&path));
     }
 
     Ok(())
 }
 
-fn get_shred_cmd(args: &Args) -> Command {
+fn get_shred_cmd(config: &Config) -> Command {
     let mut shred_cmd = Command::new("shred");
     shred_cmd.args(&["-z", "-u"][..]);
-    if args.verbose {
+    if config.verbose {
         shred_cmd.arg("-v");
     }
-    if let Some(n) = args.iterations {
+    if let Some(n) = config.iterations {
         shred_cmd.arg(fmt::format(format_args!("{}", n)));
     }
     shred_cmd
 }
 
-fn prompt(args: fmt::Arguments) -> io::Result<bool> {
-    use std::io::Write;
-
-    print!("{} ", args);
+fn prompt(config: fmt::Arguments) -> io::Result<bool> {
+    print!("{} ", config);
     try!(io::stdout().flush());
     let mut s = String::new();
     try!(io::stdin().read_line(&mut s));
