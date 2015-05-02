@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::PathExt;
 use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::result::Result;
 
@@ -67,7 +67,8 @@ fn main() {
         force: matches.is_present("force"),
         verbose: matches.is_present("verbose"),
         interactive: matches.is_present("interactive"),
-        preserve_root: matches.is_present("preserve-root") || !matches.is_present("no-preserve-root"),
+        preserve_root: matches.is_present("preserve-root") ||
+            !matches.is_present("no-preserve-root"),
         iterations: matches.value_of("N")
             .and_then(|s| s.parse::<usize>().ok()),
     };
@@ -188,19 +189,21 @@ fn recursive_shred<P: AsRef<Path>>(path: P, config: &Config) -> Result<(), Recur
 
 fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
     use std::fs;
-    use std::iter;
 
     let mut path = path.as_ref().to_path_buf();
     if !config.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
         if let Some(name) = path.clone().file_name() {
             let len = name.to_bytes().unwrap().len();
             for n in (1..len+1).rev() {
-                let mut s = String::new();
-                s.extend(iter::repeat('0').take(n));
+                let new_path = match generate_new_path(&path, n) {
+                    None => break,
+                    Some(p) => p,
+                };
 
-                let new_path = path.with_file_name(&s);
+                if config.verbose {
+                    println!("shrem: {}: renaming to {}", path.display(), new_path.display());
+                }
                 try!(fs::rename(&path, &new_path));
-                if config.verbose { println!("shrem: {}: renamed to {}", path.display(), new_path.display()); }
                 path = new_path;
             }
         }
@@ -219,7 +222,7 @@ fn get_shred_cmd(config: &Config) -> Command {
         shred_cmd.arg("-v");
     }
     if let Some(n) = config.iterations {
-        shred_cmd.arg(fmt::format(format_args!("{}", n)));
+        shred_cmd.arg(fmt::format(format_args!("-n {}", n)));
     }
     shred_cmd
 }
@@ -233,4 +236,32 @@ fn prompt(config: fmt::Arguments) -> io::Result<bool> {
         Some('y') | Some('Y') => Ok(true),
         _ => Ok(false),
     }
+}
+
+fn generate_new_path<P: AsRef<Path>>(path: P, length: usize) -> Option<PathBuf> {
+    let mut path = path.as_ref().to_path_buf();
+
+    let chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+        .chars().collect();
+    let mut idxs = vec![0; length];
+    let mut s = String::with_capacity(length);
+    while idxs[0] < chars.len() {
+        s.clear();
+        s.extend(idxs.iter().map(|&i| unsafe { *chars.get_unchecked(i) }));
+        path.set_file_name(&s);
+        if !path.exists() {
+            return Some(path);
+        }
+
+        for (i, e) in idxs.iter_mut().enumerate().rev() {
+            *e += 1;
+            if i != 0 && *e == chars.len() {
+                *e = 0;
+            } else {
+                break;
+            }
+        }
+    }
+
+    None
 }
