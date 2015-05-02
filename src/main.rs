@@ -21,6 +21,7 @@ struct Config {
     verbose: bool,
     interactive: bool,
     preserve_root: bool,
+    no_remove: bool,
     iterations: Option<usize>,
 }
 
@@ -50,11 +51,14 @@ fn main() {
         .arg(Arg::with_name("preserve-root")
              .long("preserve-root")
              .mutually_excludes("no-preserve-root")
-             .help("do not remove '/' (default)"))
+             .help("Do not remove '/' (default)"))
         .arg(Arg::with_name("no-preserve-root")
              .long("no-preserve-root")
              .mutually_excludes("preserve-root")
-             .help("allow removing '/'"))
+             .help("Allow removing '/'"))
+        .arg(Arg::with_name("no-remove")
+             .long("no-remove")
+             .help("Don't remove files (only overwrite)"))
         .arg(Arg::with_name("N")
              .short("n")
              .long("iterations")
@@ -69,6 +73,7 @@ fn main() {
         interactive: matches.is_present("interactive"),
         preserve_root: matches.is_present("preserve-root") ||
             !matches.is_present("no-preserve-root"),
+        no_remove: matches.is_present("no-remove"),
         iterations: matches.value_of("N")
             .and_then(|s| s.parse::<usize>().ok()),
     };
@@ -171,7 +176,9 @@ fn recursive_shred<P: AsRef<Path>>(path: P, config: &Config) -> Result<(), Recur
             for entry in try!(fs::read_dir(path)) {
                 try!(recursive_shred(try!(entry).path(), config));
             }
-            try!(shred_dir(path, config));
+            if !config.no_remove {
+                try!(shred_dir(path, config));
+            }
         }
     } else {
         if !config.interactive || try!(prompt(format_args!("remove file '{}'?", path.display()))) {
@@ -217,7 +224,10 @@ fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
 
 fn get_shred_cmd(config: &Config) -> Command {
     let mut shred_cmd = Command::new("shred");
-    shred_cmd.args(&["-z", "-u"][..]);
+    shred_cmd.arg("-z");
+    if !config.no_remove {
+        shred_cmd.arg("-u");
+    }
     if config.verbose {
         shred_cmd.arg("-v");
     }
