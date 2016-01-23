@@ -77,7 +77,7 @@ fn main() {
 
     if config.recursive {
         let mut err = false;
-        for f in matches.values_of("FILE").unwrap_or(vec![]) {
+        for f in matches.values_of("FILE").unwrap_or_else(|| vec![]) {
             match recursive_shred(f, &config) {
                 Ok(()) => (),
                 Err(e) => {
@@ -93,7 +93,7 @@ fn main() {
             std::process::exit(1);
         }
     } else {
-        let mut paths = matches.values_of("FILE").unwrap_or(vec![]);
+        let mut paths = matches.values_of("FILE").unwrap_or_else(|| vec![]);
         if config.force {
             paths = paths.into_iter()
                 .filter(|ps| {
@@ -102,7 +102,7 @@ fn main() {
                 }).collect();
         }
 
-        if paths.len() > 0 {
+        if !paths.is_empty() {
             let mut shred_cmd = get_shred_cmd(&config);
             shred_cmd.args(&paths);
             std::process::exit(shred_cmd.status().unwrap().code().unwrap());
@@ -119,7 +119,7 @@ enum RecursiveShredError {
 
 impl Display for RecursiveShredError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        if let &RecursiveShredError::IoError(ref e) = self {
+        if let RecursiveShredError::IoError(ref e) = *self {
             e.fmt(f)
         } else {
             f.write_str(<Self as Error>::description(self))
@@ -140,7 +140,7 @@ impl Error for RecursiveShredError {
     }
 
     fn cause(&self) -> Option<&Error> {
-        if let &RecursiveShredError::IoError(ref e) = self {
+        if let RecursiveShredError::IoError(ref e) = *self {
             Some(e)
         } else {
             None
