@@ -194,6 +194,8 @@ fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
 
     let mut path = path.as_ref().to_path_buf();
     if !config.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
+        if config.verbose { println!("shrem: {}: removing", path.display()); }
+
         if let Some(name) = path.clone().file_name() {
             let len = name.as_bytes().len();
             for n in (1..len+1).rev() {
@@ -203,15 +205,15 @@ fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
                 };
 
                 if config.verbose {
-                    println!("shrem: {}: renaming to {}", path.display(), new_path.display());
+                    println!("shrem: {}: renamed to {}", path.display(), new_path.display());
                 }
                 try!(fs::rename(&path, &new_path));
                 path = new_path;
             }
         }
 
-        if config.verbose { println!("shrem: {}: removing", path.display()); }
         try!(fs::remove_dir(&path));
+        if config.verbose { println!("shrem: {}: removed", path.display()); }
     }
 
     Ok(())
