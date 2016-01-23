@@ -77,7 +77,7 @@ fn main() {
 
     if config.recursive {
         let mut err = false;
-        for f in matches.values_of("FILE").unwrap_or_else(|| vec![]) {
+        for f in matches.values_of("FILE").unwrap_or_default() {
             match recursive_shred(f, &config) {
                 Ok(()) => (),
                 Err(e) => {
@@ -93,7 +93,7 @@ fn main() {
             std::process::exit(1);
         }
     } else {
-        let mut paths = matches.values_of("FILE").unwrap_or_else(|| vec![]);
+        let mut paths = matches.values_of("FILE").unwrap_or_default();
         if config.force {
             paths = paths.into_iter()
                 .filter(|ps| {
