@@ -1,15 +1,12 @@
-#![feature(convert)]
-#![feature(path_ext)]
-
 extern crate clap;
 
 use clap::{App, Arg};
 use std::error::Error;
-use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::fs::PathExt;
-use std::io;
+use std::fmt;
+use std::fs;
 use std::io::Write;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::result::Result;
@@ -50,11 +47,11 @@ fn main() {
              .help("Prompt before removal"))
         .arg(Arg::with_name("preserve-root")
              .long("preserve-root")
-             .mutually_excludes("no-preserve-root")
+             .conflicts_with("no-preserve-root")
              .help("Do not remove '/' (default)"))
         .arg(Arg::with_name("no-preserve-root")
              .long("no-preserve-root")
-             .mutually_excludes("preserve-root")
+             .conflicts_with("preserve-root")
              .help("Allow removing '/'"))
         .arg(Arg::with_name("no-remove")
              .long("no-remove")
@@ -136,7 +133,7 @@ impl Error for RecursiveShredError {
             RecursiveShredError::IoError(ref e) =>
                 e.description(),
             RecursiveShredError::PreservedRootError =>
-                "tried to remove '/' recursively. use --no-preserve-root to override this.",
+                "It is dangerous to operate on '/' recursively. Use --no-preserve-root to override this failsafe.",
             RecursiveShredError::ExternalProcessError(_) =>
                 "external process exited with an error",
         }
@@ -158,8 +155,6 @@ impl From<io::Error> for RecursiveShredError {
 }
 
 fn recursive_shred<P: AsRef<Path>>(path: P, config: &Config) -> Result<(), RecursiveShredError> {
-    use std::fs;
-
     let path = path.as_ref();
 
     if config.force && !path.exists() {
@@ -195,12 +190,12 @@ fn recursive_shred<P: AsRef<Path>>(path: P, config: &Config) -> Result<(), Recur
 }
 
 fn shred_dir<P: AsRef<Path>>(path: P, config: &Config) -> io::Result<()> {
-    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
 
     let mut path = path.as_ref().to_path_buf();
     if !config.interactive || try!(prompt(format_args!("remove directory '{}'?", path.display()))) {
         if let Some(name) = path.clone().file_name() {
-            let len = name.to_bytes().unwrap().len();
+            let len = name.as_bytes().len();
             for n in (1..len+1).rev() {
                 let new_path = match generate_new_path(&path, n) {
                     None => break,
