@@ -77,14 +77,16 @@ fn main() {
 
     if config.recursive {
         let mut err = false;
-        for f in matches.values_of("FILE").unwrap_or_default() {
-            match recursive_shred(f, &config) {
-                Ok(()) => (),
-                Err(e) => {
-                    err = true;
-                    match e {
-                        RecursiveShredError::ExternalProcessError(_) => (),
-                        _ => writeln!(io::stderr(), "shrem: {}", e).unwrap(),
+        if let Some(iter) = matches.values_of("FILE") {
+            for f in iter {
+                match recursive_shred(f, &config) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        err = true;
+                        match e {
+                            RecursiveShredError::ExternalProcessError(_) => (),
+                            _ => writeln!(io::stderr(), "shrem: {}", e).unwrap(),
+                        }
                     }
                 }
             }
@@ -93,7 +95,7 @@ fn main() {
             std::process::exit(1);
         }
     } else {
-        let mut paths = matches.values_of("FILE").unwrap_or_default();
+        let mut paths: Vec<&str> = matches.values_of("FILE").map(|iter| iter.collect()).unwrap_or_default();
         if config.force {
             paths = paths.into_iter()
                 .filter(|ps| {
