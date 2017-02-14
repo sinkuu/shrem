@@ -1,7 +1,11 @@
 # shrem
-rm-like wrapper for `shred`.
+A wrapper for `shred` that provides options like `rm`. For example, it allows shredding files recursively with `-r`.
 
 ```bash
+$ shred -rv dir
+shred: invalid option -- 'r'
+Try 'shred --help' for more information.
+
 $ shrem -rv dir
 shred: dir/file: pass 1/4 (random)...
 shred: dir/file: pass 2/4 (random)...
